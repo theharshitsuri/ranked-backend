@@ -1,6 +1,4 @@
 const { Pool } = require('pg');
-const sqlite3 = require('sqlite3').verbose();
-const { open } = require('sqlite');
 require('dotenv').config();
 
 let db;
@@ -14,6 +12,8 @@ async function initDB() {
     });
     console.log('PostgreSQL connected.');
   } else {
+    const sqlite3 = require('sqlite3').verbose();
+    const { open } = require('sqlite');
     db = await open({
       filename: './rankedai.db',
       driver: sqlite3.Database
