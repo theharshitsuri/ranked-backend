@@ -71,7 +71,8 @@ async function run() {
       matched_text TEXT,
       mention_position INTEGER,
       sentiment_label TEXT,
-      confidence NUMERIC
+      confidence NUMERIC,
+      excerpt TEXT
     );
 
     CREATE TABLE IF NOT EXISTS recommendations (
