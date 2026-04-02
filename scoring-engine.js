@@ -9,9 +9,18 @@ function extractMentions(trackBrandsArr, responseText) {
   const results = [];
 
   for (const brand of trackBrandsArr) {
-    const target = brand.name.toLowerCase();
+    const targets = [brand.name.toLowerCase(), ...(brand.aliases || []).map(a => a.toLowerCase())];
     
-    if (!text.includes(target)) continue;
+    let matchedText = null;
+    for (const target of targets) {
+      if (text.includes(target)) {
+        matchedText = target;
+        break;
+      }
+    }
+
+    if (!matchedText) continue;
+    const target = matchedText;
 
     let position = -1;
     for (let i = 0; i < sentences.length; i++) {

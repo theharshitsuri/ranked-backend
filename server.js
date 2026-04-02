@@ -26,7 +26,10 @@ app.post('/api/scan', async (req, res) => {
     let brandRecord = await get('SELECT * FROM brands WHERE LOWER(name) = LOWER(?)', [brand]);
     if (!brandRecord) {
       const result = await run('INSERT INTO brands (name, website, category) VALUES (?, ?, ?)', [brand, website || null, category]);
-      brandRecord = { id: result.lastID, name: brand, website, category };
+      brandRecord = { id: result.lastID, name: brand, website, category, aliases: [] };
+    } else {
+      const aliasRows = await all('SELECT alias FROM brand_aliases WHERE brand_id = ?', [brandRecord.id]);
+      brandRecord.aliases = aliasRows.map(r => r.alias);
     }
 
     const competitorRecords = [];
@@ -36,7 +39,10 @@ app.post('/api/scan', async (req, res) => {
         let r = await get('SELECT * FROM brands WHERE LOWER(name) = LOWER(?)', [c]);
         if (!r) {
           const ins = await run('INSERT INTO brands (name, category) VALUES (?, ?)', [c, category]);
-          r = { id: ins.lastID, name: c, category };
+          r = { id: ins.lastID, name: c, category, aliases: [] };
+        } else {
+          const aliasRows = await all('SELECT alias FROM brand_aliases WHERE brand_id = ?', [r.id]);
+          r.aliases = aliasRows.map(row => row.alias);
         }
         competitorRecords.push(r);
       }
