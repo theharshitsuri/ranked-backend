@@ -3,6 +3,7 @@ const cors = require('cors');
 const { initDB, get, all, run, isPostgres } = require('./db');
 const { runPrompt } = require('./openai-service');
 const { extractMentions, calculateScore, detectTopCompetitor } = require('./scoring-engine');
+const { generatePrompts } = require('./query-engine');
 
 require('dotenv').config();
 
@@ -44,11 +45,13 @@ app.post('/api/scan', async (req, res) => {
     const scanResult = await run('INSERT INTO scans (brand_id, status) VALUES (?, ?)', [brandRecord.id, 'pending']);
     const scanId = scanResult.lastID;
 
-    // Pick 20 prompts for Phase 3 deep scan analysis
-    const prompts = await all('SELECT * FROM prompts ORDER BY RANDOM() LIMIT 20');
-    for (const p of prompts) {
-      const resolvedText = p.prompt_text.replace(/{category}/ig, category);
-      await run('INSERT INTO scan_prompts (scan_id, prompt_id, resolved_prompt_text) VALUES (?, ?, ?)', [scanId, p.id, resolvedText]);
+    // Phase 6: Dynamic Enterprise Query Expansion
+    const compositePrompts = await generatePrompts(brand, category, competitorRecords.map(c => c.name));
+    for (const p of compositePrompts) {
+      await run(`
+        INSERT INTO scan_prompts (scan_id, resolved_prompt_text, cluster_type, weight) 
+        VALUES (?, ?, ?, ?)
+      `, [scanId, p.text, p.cluster || 'discovery', p.weight || 1.0]);
     }
 
     runScanWorker(scanId, brandRecord, competitorRecords).catch(err => console.error('Worker failed:', err));
@@ -72,7 +75,8 @@ app.get('/api/scans/:id', async (req, res) => {
     }
 
     const rawPrompts = await all(`
-      SELECT sp.id as sp_id, sp.resolved_prompt_text, m.brand_id, m.matched_text, m.mention_position, m.sentiment_label, m.excerpt 
+      SELECT sp.id as sp_id, sp.resolved_prompt_text, sp.cluster_type, sp.weight,
+             m.brand_id, m.matched_text, m.mention_position, m.sentiment_label, m.excerpt 
       FROM scan_prompts sp
       LEFT JOIN model_runs mr ON sp.id = mr.scan_prompt_id
       LEFT JOIN mentions m ON mr.id = m.model_run_id
@@ -82,7 +86,13 @@ app.get('/api/scans/:id', async (req, res) => {
     const groupedMap = {};
     for (const row of rawPrompts) {
       if (!groupedMap[row.sp_id]) {
-        groupedMap[row.sp_id] = { text: row.resolved_prompt_text, target_mention: null, competitor_mentions: [] };
+        groupedMap[row.sp_id] = { 
+          text: row.resolved_prompt_text, 
+          cluster: row.cluster_type,
+          weight: row.weight,
+          target_mention: null, 
+          competitor_mentions: [] 
+        };
       }
       
       if (row.brand_id) {
@@ -123,8 +133,9 @@ async function runScanWorker(scanId, brandRecord, competitorRecords) {
     const allBrandsToTrack = [brandRecord, ...competitorRecords];
     let allMentions = [];
     const allResponseTexts = [];
+    const resultsMap = {}; // Map of promptId -> result info
 
-    // Parallel Batching (5 at a time) for speed and scaling
+    // Parallel Batching (5 at a time)
     for (let i = 0; i < scanPrompts.length; i += 5) {
       const batch = scanPrompts.slice(i, i + 5);
       
@@ -138,11 +149,17 @@ async function runScanWorker(scanId, brandRecord, competitorRecords) {
         `, [sp.id, 'gpt-4o-mini', 'openai', res.success ? res.text : res.error, res.latency, res.prompt_tokens || 0, res.completion_tokens || 0, res.success ? 'completed' : 'failed']);
 
         const runId = runResult.lastID;
+        resultsMap[sp.id] = { weight: sp.weight, cluster: sp.cluster_type, mentioned: false, rank: 99, sentiment: 'neutral', runId };
 
         if (res.success) {
           const foundMentions = extractMentions(allBrandsToTrack, res.text);
           for (const m of foundMentions) {
             allMentions.push(m);
+            if (m.brand_id === brandRecord.id) {
+              resultsMap[sp.id].mentioned = true;
+              resultsMap[sp.id].rank = m.mention_position;
+              resultsMap[sp.id].sentiment = m.sentiment_label;
+            }
             await run(`
               INSERT INTO mentions (model_run_id, brand_id, matched_text, mention_position, sentiment_label, confidence, excerpt)
               VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -152,10 +169,17 @@ async function runScanWorker(scanId, brandRecord, competitorRecords) {
       }));
     }
 
-    const targetScore = calculateScore(scanPrompts.length, allMentions.filter(m => m.brand_id === brandRecord.id));
+    // Enterprise Scoring Logic
+    const targetScore = calculateScore(Object.values(resultsMap));
+    
+    // Competitor relative scores
     const compScores = competitorRecords.map(c => {
-       const ms = allMentions.filter(m => m.brand_id === c.id);
-       return { name: c.name, score: calculateScore(scanPrompts.length, ms) };
+       const cResults = scanPrompts.map(sp => {
+          const res = resultsMap[sp.id];
+          const m = allMentions.find(mStore => mStore.brand_id === c.id && mStore.model_run_id === res.runId); 
+          return { weight: sp.weight, mentioned: !!m, mention_position: m ? m.mention_position : 99, sentiment: m ? m.sentiment_label : 'neutral' };
+       });
+       return { name: c.name, score: calculateScore(cResults) };
     });
 
     const autoCompetitor = detectTopCompetitor(allResponseTexts, allBrandsToTrack.map(b => b.name));

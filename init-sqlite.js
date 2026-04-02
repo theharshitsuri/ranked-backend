@@ -48,7 +48,9 @@ async function run() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       scan_id INTEGER REFERENCES scans(id),
       prompt_id INTEGER REFERENCES prompts(id),
-      resolved_prompt_text TEXT NOT NULL
+      resolved_prompt_text TEXT NOT NULL,
+      cluster_type TEXT,
+      weight REAL DEFAULT 1.0
     );
 
     CREATE TABLE IF NOT EXISTS model_runs (

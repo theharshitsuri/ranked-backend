@@ -48,87 +48,99 @@ function extractMentions(trackBrandsArr, responseText) {
   return results;
 }
 
-function calculateScore(totalPrompts, mentionsArray) {
-  if (totalPrompts === 0) return { final_score: 0, inclusion_score: 0, position_score: 0, sentiment_score: 0, potential_score: 0, label: 'Invisible', presence_label: 'Low', dominance_label: 'Low', insight_copy: 'You are currently invisible to AI in this category.' };
-  
-  const presenceRate = mentionsArray.length / totalPrompts;
-  
-  let posWeightSum = 0;
-  let sentimentWeightSum = 0;
-  let hasTop3 = false;
-  let rank1Count = 0;
-  
-  for (const m of mentionsArray) {
-    if (m.mention_position === 1) { posWeightSum += 1.0; hasTop3 = true; rank1Count++; }
-    else if (m.mention_position === 2) { posWeightSum += 0.7; hasTop3 = true; }
-    else if (m.mention_position === 3) { posWeightSum += 0.4; hasTop3 = true; }
-    else if (m.mention_position <= 5) posWeightSum += 0.2;
-
-    if (m.sentiment_label === 'positive') sentimentWeightSum += 1.0;
-    else if (m.sentiment_label === 'neutral') sentimentWeightSum += 0.6;
-    else if (m.sentiment_label === 'negative') sentimentWeightSum += 0.2;
+function calculateScore(scanPromptsWithMentions) {
+  if (!scanPromptsWithMentions || scanPromptsWithMentions.length === 0) {
+    return { final_score: 0, presence_score: 0, dominance_score: 0, confidence_score: 0, label: 'No Data' };
   }
+
+  let totalWeight = 0;
+  let weightedPresenceSum = 0;
+  let weightedDominanceSum = 0;
+  let weightedRankSum = 0;
+  let weightedSentimentSum = 0;
+  let mentionedWeight = 0;
+
+  for (const item of scanPromptsWithMentions) {
+    const weight = item.weight || 1.0;
+    totalWeight += weight;
+
+    if (item.mentioned) {
+      weightedPresenceSum += weight;
+      mentionedWeight += weight;
+      
+      // Dominance = Rank #1
+      if (item.mention_position === 1) {
+        weightedDominanceSum += weight;
+      }
+
+      // Rank scoring (1.0 for rank 1, degrading downwards)
+      let rankScore = 0;
+      if (item.mention_position === 1) rankScore = 1.0;
+      else if (item.mention_position === 2) rankScore = 0.7;
+      else if (item.mention_position === 3) rankScore = 0.4;
+      else if (item.mention_position <= 5) rankScore = 0.2;
+      weightedRankSum += (rankScore * weight);
+
+      // Sentiment scoring
+      let sentScore = 0.6; // neutral
+      if (item.sentiment === 'positive') sentScore = 1.0;
+      else if (item.sentiment === 'negative') sentScore = 0.2;
+      weightedSentimentSum += (sentScore * weight);
+    }
+  }
+
+  const presenceRate = weightedPresenceSum / totalWeight;
+  const dominanceRate = mentionedWeight > 0 ? (weightedDominanceSum / mentionedWeight) : 0;
+  const avgRankScore = totalWeight > 0 ? (weightedRankSum / totalWeight) : 0;
+  const avgSentimentScore = mentionedWeight > 0 ? (weightedSentimentSum / mentionedWeight) : 0;
+
+  // Base visibility calculation: 50% presence, 40% rank, 10% sentiment
+  let rawScore = 100 * ((0.5 * presenceRate) + (0.4 * avgRankScore) + (0.1 * avgSentimentScore));
   
-  const dominanceRate = mentionsArray.length > 0 ? (rank1Count / mentionsArray.length) : 0;
-  const avgPosScore = totalPrompts > 0 ? (posWeightSum / totalPrompts) : 0;
-  const avgSentimentScore = mentionsArray.length > 0 ? (sentimentWeightSum / mentionsArray.length) : 0;
-  
-  let rawScore = 100 * ((0.5 * presenceRate) + (0.4 * avgPosScore) + (0.1 * avgSentimentScore));
-  
+  // Normalization and floors
   if (rawScore > 0) {
     rawScore = (rawScore * 0.85) + 15;
   }
-  
-  if (presenceRate >= 0.8) rawScore += 18; // Massive Authority Boost for household names (e.g. Canva)
-  else if (presenceRate >= 0.5) rawScore += 10;
-  else if (mentionsArray.length > 0) rawScore += 5; 
-  
-  if (hasTop3) rawScore += 5; 
-  
+
   const finalScore = Math.min(100, Math.round(rawScore));
   
+  // Confidence score based on sample size (prompts)
+  const confidenceScore = Math.min(100, Math.round((scanPromptsWithMentions.length / 30) * 100));
+
   let label = 'Low visibility';
-  if (finalScore >= 86) label = 'Dominant in AI answers';
-  else if (finalScore >= 71) label = 'Strong visibility';
-  else if (finalScore >= 51) label = 'Growing presence';
-  else if (finalScore >= 31) label = 'Emerging';
-  else label = 'Low visibility';
-
-  const potentialScore = Math.min(100, finalScore + Math.floor(Math.random() * 15) + (totalPrompts - mentionsArray.length) * 2);
-
-  const getLevel = (rate) => {
-    if (rate >= 0.75) return 'High';
-    if (rate >= 0.4) return 'Medium';
-    return 'Low';
-  };
-  const presenceLabel = getLevel(presenceRate);
-  const dominanceLabel = getLevel(dominanceRate);
-
-  let insightCopy = "";
-  if (presenceRate >= 0.75 && dominanceRate < 0.4) {
-    insightCopy = "AI recommends you frequently, but distributes top #1 rankings across other tools.";
-  } else if (presenceRate >= 0.75 && dominanceRate >= 0.75) {
-    insightCopy = "You absolutely dominate this category. AI consistently ranks you #1.";
-  } else if (presenceRate >= 0.4 && dominanceRate >= 0.5) {
-    insightCopy = "When AI mentions you, it ranks you highly. But you are missing from several discovery conversations.";
-  } else if (presenceRate > 0) {
-    insightCopy = "You have an emerging footprint, but AI favors established category competitors.";
-  } else {
-    insightCopy = "You are currently invisible to AI in this category.";
-  }
+  if (finalScore >= 85) label = 'Dominant';
+  else if (finalScore >= 70) label = 'Strong';
+  else if (finalScore >= 50) label = 'Moderate';
+  else if (finalScore >= 30) label = 'Emerging';
+  else label = 'Low';
 
   return {
-    raw_score: Math.round(rawScore),
-    inclusion_score: Math.round(presenceRate * 100),
-    position_score: Math.round(avgPosScore * 100),
-    sentiment_score: Math.round(avgSentimentScore * 100),
     final_score: finalScore,
-    potential_score: Math.max(potentialScore, finalScore + 4),
-    label,
-    presence_label: presenceLabel,
-    dominance_label: dominanceLabel,
-    insight_copy: insightCopy
+    presence_score: Math.round(presenceRate * 100),
+    dominance_score: Math.round(dominanceRate * 100),
+    avg_sentiment_score: Math.round(avgSentimentScore * 100),
+    confidence_score: confidenceScore,
+    label: label,
+    // Backward compatibility aliases
+    inclusion_score: Math.round(presenceRate * 100),
+    position_score: Math.round(avgRankScore * 100),
+    sentiment_score: Math.round(avgSentimentScore * 100),
+    metrics: {
+      presence_rate: presenceRate,
+      dominance_rate: dominanceRate,
+      total_prompts: scanPromptsWithMentions.length,
+      total_weight: totalWeight
+    },
+    insight_copy: generateInsight(presenceRate, dominanceRate)
   };
+}
+
+function generateInsight(presence, dominance) {
+  if (presence >= 0.75 && dominance >= 0.75) return "Absolute category dominance. Recommended consistently at #1.";
+  if (presence >= 0.75 && dominance < 0.4) return "Broad visibility, but AI frequently ranks competitors higher.";
+  if (presence >= 0.4 && dominance >= 0.5) return "Strong authority when mentioned, but missing from many conversations.";
+  if (presence > 0) return "Emerging footprint. Favored in niche queries but lacks general authority.";
+  return "Currently invisible to AI discovery in this category.";
 }
 
 function detectTopCompetitor(responseTextsArray, excludeBrands) {

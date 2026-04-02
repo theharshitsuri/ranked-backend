@@ -48,7 +48,9 @@ async function run() {
       id SERIAL PRIMARY KEY,
       scan_id INTEGER REFERENCES scans(id),
       prompt_id INTEGER REFERENCES prompts(id),
-      resolved_prompt_text TEXT NOT NULL
+      resolved_prompt_text TEXT NOT NULL,
+      cluster_type VARCHAR(100),
+      weight NUMERIC DEFAULT 1.0
     );
 
     CREATE TABLE IF NOT EXISTS model_runs (
