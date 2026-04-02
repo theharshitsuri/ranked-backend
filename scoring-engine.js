@@ -153,15 +153,27 @@ function generateInsight(presence, dominance) {
 }
 
 function detectTopCompetitor(responseTextsArray, excludeBrands) {
-  const excludeUpper = excludeBrands.map(b => b.toUpperCase());
+  const excludeUpper = (excludeBrands || []).map(b => (typeof b === 'string' ? b : b.name).toUpperCase());
   const wordsMap = {};
   
+  // Robust stopwords to avoid misidentifying pronouns/common words as brands
+  const ignores = new Set([
+    'I', 'THE', 'A', 'AN', 'THIS', 'THAT', 'THESE', 'THOSE', 'ARE', 'IS', 'AM', 'WAS', 'WERE', 'BE', 'BEEN', 'BEING',
+    'IN', 'ON', 'AT', 'BY', 'FOR', 'WITH', 'ABOUT', 'AGAINST', 'BETWEEN', 'INTO', 'THROUGH', 'DURING', 'BEFORE', 'AFTER',
+    'ABOVE', 'BELOW', 'TO', 'FROM', 'UP', 'DOWN', 'OUT', 'OFF', 'OVER', 'UNDER', 'AGAIN', 'FURTHER', 'THEN', 'ONCE',
+    'HERE', 'THERE', 'WHEN', 'WHERE', 'WHY', 'HOW', 'ALL', 'ANY', 'BOTH', 'EACH', 'FEW', 'MORE', 'MOST', 'OTHER', 'SOME',
+    'SUCH', 'NO', 'NOR', 'NOT', 'ONLY', 'OWN', 'SAME', 'SO', 'THAN', 'TOO', 'VERY', 'S', 'T', 'CAN', 'WILL', 'JUST', 'DON',
+    'SHOULD', 'NOW', 'IT', 'ITS', 'THEY', 'THEM', 'THEIR', 'WE', 'US', 'OUR', 'HE', 'HIM', 'HIS', 'SHE', 'HER', 'HERS',
+    'WHO', 'WHICH', 'WHOM', 'WHOSE', 'AND', 'OR', 'BUT', 'IF', 'WHETHER', 'WHILE', 'ALTHOUGH', 'HOWEVER', 'THUS', 'THEREFORE',
+    'ALSO', 'FINALLY', 'MANY', 'TOP', 'BEST', 'GREAT', 'EXCELLENT', 'VERSATILE', 'POWERFUL', 'POPULAR'
+  ]);
+
   responseTextsArray.forEach(text => {
+    // Matches TitleCase words that are likely brand names
     const matches = text.match(/\b[A-Z][a-z]+\b/g) || [];
     matches.forEach(w => {
       const wu = w.toUpperCase();
-      const ignores = ['I', 'The', 'A', 'An', 'This', 'That', 'Are', 'Is', 'In', 'On', 'Using', 'Best', 'Top', 'For', 'If', 'You', 'Your', 'And', 'Or', 'But', 'With', 'As', 'To', 'Of'];
-      if (!ignores.includes(w) && !excludeUpper.includes(wu)) {
+      if (!ignores.has(wu) && !excludeUpper.includes(wu)) {
         wordsMap[w] = (wordsMap[w] || 0) + 1;
       }
     });
