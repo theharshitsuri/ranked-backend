@@ -3,6 +3,7 @@ const cors = require('cors');
 const { initDB, get, all, run, isPostgres } = require('./db');
 const { runPrompt } = require('./openai-service');
 const { extractMentions, calculateScore, detectTopCompetitor } = require('./scoring-engine');
+const { validateProxyKey, forwardChatCompletion, logProxyRequest, generateProxyKey } = require('./proxy-service');
 
 require('dotenv').config();
 
@@ -176,3 +177,98 @@ async function runScanWorker(scanId, brandRecord, competitorRecords) {
     await run("UPDATE scans SET status = 'failed' WHERE id = ?", [scanId]);
   }
 }
+
+// ─── LLM PROXY ROUTES ────────────────────────────────────────────────────────
+
+/**
+ * POST /v1/chat/completions
+ * OpenAI-compatible drop-in proxy endpoint.
+ * Auth: Authorization: Bearer llm_obs_xxxx
+ */
+app.post('/v1/chat/completions', async (req, res) => {
+  const t0 = Date.now();
+  const authHeader = req.headers['authorization'] || '';
+  const rawKey = authHeader.replace(/^Bearer\s+/i, '').trim();
+
+  const keyRecord = await validateProxyKey(rawKey);
+  if (!keyRecord) {
+    return res.status(401).json({
+      error: { message: 'Invalid or inactive proxy API key.', type: 'invalid_request_error', code: 'invalid_api_key' }
+    });
+  }
+
+  try {
+    const { completion, latency_ms, prompt_tokens, completion_tokens, model } = await forwardChatCompletion(req.body);
+    await logProxyRequest({ keyId: keyRecord.id || null, model, promptTokens: prompt_tokens, completionTokens: completion_tokens, latencyMs: latency_ms, status: 'success' });
+    return res.json(completion);
+  } catch (err) {
+    const latency_ms = Date.now() - t0;
+    console.error('Proxy error:', err.message);
+    await logProxyRequest({ keyId: keyRecord.id || null, model: req.body?.model || 'unknown', promptTokens: 0, completionTokens: 0, latencyMs: latency_ms, status: 'error', errorMsg: err.message });
+    return res.status(502).json({
+      error: { message: err.message, type: 'upstream_error' }
+    });
+  }
+});
+
+/**
+ * POST /api/proxy/keys
+ * Generate a new llm_obs_ API key.
+ * Body: { label: "my-app" }
+ */
+app.post('/api/proxy/keys', async (req, res) => {
+  try {
+    const { label } = req.body;
+    const key = await generateProxyKey(label);
+    res.json({ success: true, key });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to generate key.' });
+  }
+});
+
+/**
+ * GET /api/proxy/logs
+ * Returns recent proxy usage logs.
+ */
+app.get('/api/proxy/logs', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const logs = await all(
+      `SELECT pl.*, pak.label as key_label
+       FROM proxy_logs pl
+       LEFT JOIN proxy_api_keys pak ON pl.key_id = pak.id
+       ORDER BY pl.created_at DESC
+       LIMIT ?`,
+      [limit]
+    );
+    const summary = await get(
+      `SELECT COUNT(*) as total_requests,
+              COALESCE(SUM(prompt_tokens + completion_tokens), 0) as total_tokens,
+              COALESCE(AVG(latency_ms), 0) as avg_latency_ms
+       FROM proxy_logs`,
+      []
+    );
+    res.json({ summary, logs });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch logs.' });
+  }
+});
+
+/**
+ * GET /api/proxy/keys
+ * List all proxy API keys.
+ */
+app.get('/api/proxy/keys', async (req, res) => {
+  try {
+    const keys = await all(
+      `SELECT id, label, key_value, is_active, created_at FROM proxy_api_keys ORDER BY created_at DESC`,
+      []
+    );
+    res.json({ keys });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch keys.' });
+  }
+});
